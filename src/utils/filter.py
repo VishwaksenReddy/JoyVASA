@@ -158,7 +158,10 @@ def smooth_(ori_data, method="median"):
         R = get_rotation_matrix(torch.FloatTensor(pitch), torch.FloatTensor(yaw), torch.FloatTensor(roll))
         R = R.reshape(1, 3, 3).cpu().numpy().astype(np.float32)
 
-        motion_list.append({"exp": exp, "scale": scale, "t": t, "pitch": pitch, "yaw": yaw, "roll": roll, "R": R})
+        item = {"exp": exp, "scale": scale, "t": t, "pitch": pitch, "yaw": yaw, "roll": roll, "R": R}
+        if "audio_energy" in ori_data["motion"][idx]:
+            item["audio_energy"] = ori_data["motion"][idx]["audio_energy"]
+        motion_list.append(item)
     # print(f"exp: {exp.shape}, scale: {scale.shape}, t: {t.shape}, pitch: {pitch.shape}, yaw: {yaw.shape}, roll: {roll.shape}, R: {R.shape}")
     tgt_motion = {'n_frames': smoothed_data.shape[0], 'output_fps': 25, 'motion': motion_list}
     return tgt_motion

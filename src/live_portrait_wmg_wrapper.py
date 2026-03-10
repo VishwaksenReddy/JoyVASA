@@ -420,6 +420,20 @@ class LivePortraitWrapper(object):
             # motion_coef = self.reformat_motion(args, motion_coef)
 
         motion_coef = motion_coef.squeeze() #.cpu().numpy().astype(np.float32)
+        audio_energy_lst = []
+        for idx in range(motion_coef.shape[0]):
+            start = round(idx * self.audio_unit)
+            end = round((idx + 1) * self.audio_unit)
+            frame_audio = audio[start:end]
+            if frame_audio.numel() == 0:
+                energy = 0.0
+            else:
+                energy = torch.sqrt(torch.mean(frame_audio.float() ** 2) + 1e-8).item()
+            audio_energy_lst.append(energy)
+        max_audio_energy = max(audio_energy_lst, default=0.0)
+        if max_audio_energy > 0:
+            audio_energy_lst = [energy / max_audio_energy for energy in audio_energy_lst]
+
         motion_list = []
         for idx in track(range(motion_coef.shape[0]), description='🚀Generating Motion Sequence...', total=motion_coef.shape[0]):
             exp = motion_coef[idx][:63].cpu() * self.templete_dict["std_exp"] + self.templete_dict["mean_exp"]
@@ -439,7 +453,16 @@ class LivePortraitWrapper(object):
             yaw = yaw.reshape(1, 1).cpu().numpy().astype(np.float32)
             roll = roll.reshape(1, 1).cpu().numpy().astype(np.float32)
             
-            motion_list.append({"exp": exp, "scale": scale, "R": R, "t": t, "pitch": pitch, "yaw": yaw, "roll": roll})
+            motion_list.append({
+                "exp": exp,
+                "scale": scale,
+                "R": R,
+                "t": t,
+                "pitch": pitch,
+                "yaw": yaw,
+                "roll": roll,
+                "audio_energy": np.float32(audio_energy_lst[idx]) if idx < len(audio_energy_lst) else np.float32(0.0),
+            })
         tgt_motion = {'n_frames': motion_coef.shape[0], 'output_fps': 25, 'motion': motion_list}
 
         if args.is_smooth_motion:

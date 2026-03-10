@@ -62,6 +62,8 @@ class LivePortraitPipeline(object):
         flag_normalize_lip = inf_cfg.flag_normalize_lip  # not overwrite
         flag_source_video_eye_retargeting = inf_cfg.flag_source_video_eye_retargeting  # keep source eye-open ratio stable
         lip_delta_before_animation, eye_delta_before_animation = None, None
+        prev_delta_new = None
+        lip_idx_lst = [6, 12, 14, 17, 19, 20]
 
         ######## process source info ########
         if inf_cfg.flag_do_crop:
@@ -114,8 +116,8 @@ class LivePortraitPipeline(object):
             delta_new = x_s_info['exp'].clone()
             if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
                 # 相对
-                delta_new = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp'])
-                for lip_idx in [6, 12, 14, 17, 19, 20]:
+                delta_new = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp']) * inf_cfg.non_lip_expression_multiplier
+                for lip_idx in lip_idx_lst:
                     delta_new[:, lip_idx, :] = x_d_i_info['exp'][:, lip_idx, :]
                 # # 绝对
                 # delta_new = x_s_info['exp'].clone()
@@ -126,8 +128,29 @@ class LivePortraitPipeline(object):
                 # delta_new[:, 8, 2] =  x_d_i_info['exp'][:, 8, 2]
                 # delta_new[:, 9, 1:] = x_d_i_info['exp'][:, 9, 1:]
             elif inf_cfg.animation_region == "lip":
-                for lip_idx in [6, 12, 14, 17, 19, 20]:
+                for lip_idx in lip_idx_lst:
                     delta_new[:, lip_idx, :] = (x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp']))[:, lip_idx, :]
+
+            delta_target = delta_new.clone()
+
+            audio_energy = None
+            if "audio_energy" in x_d_i_info:
+                audio_energy = float(x_d_i_info["audio_energy"].item())
+            if prev_delta_new is None:
+                delta_new = delta_target
+            elif audio_energy is None:
+                delta_new = delta_target
+            elif audio_energy < inf_cfg.pause_audio_threshold:
+                decay_rate = min(max(inf_cfg.pause_expression_decay_rate, 0.0), 1.0)
+                delta_new = prev_delta_new * (1 - decay_rate) + x_s_info['exp'] * decay_rate
+            else:
+                attack_rate = min(max(inf_cfg.pause_expression_attack_rate, 0.0), 1.0)
+                delta_new = prev_delta_new * (1 - attack_rate) + delta_target * attack_rate
+
+            if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp" or inf_cfg.animation_region == "lip":
+                for lip_idx in lip_idx_lst:
+                    delta_new[:, lip_idx, :] = delta_target[:, lip_idx, :]
+            prev_delta_new = delta_new.clone()
             # scale
             scale_new = x_s_info['scale'] * (x_d_i_info['scale'] / x_d_0_info['scale'])
 
