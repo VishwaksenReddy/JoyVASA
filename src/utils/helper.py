@@ -6,6 +6,7 @@ utility functions and classes to handle feature extraction and model loading
 
 import os
 import os.path as osp
+import pathlib
 import torch
 from collections import OrderedDict
 import numpy as np
@@ -149,6 +150,29 @@ def remove_ddp_dumplicate_key(state_dict):
     return state_dict_new
 
 
+def torch_load_compat(ckpt_path, map_location=None, weights_only=None):
+    load_kwargs = {}
+    if map_location is not None:
+        load_kwargs['map_location'] = map_location
+
+    original_posix_path = None
+    if os.name == 'nt':
+        original_posix_path = pathlib.PosixPath
+        pathlib.PosixPath = pathlib.PurePosixPath
+
+    try:
+        if weights_only is not None:
+            try:
+                return torch.load(ckpt_path, weights_only=weights_only, **load_kwargs)
+            except TypeError:
+                pass
+
+        return torch.load(ckpt_path, **load_kwargs)
+    finally:
+        if original_posix_path is not None:
+            pathlib.PosixPath = original_posix_path
+
+
 
 def load_model(ckpt_path, model_config, device, model_type):
     model_params = model_config['model_params'][f'{model_type}_params']
@@ -158,7 +182,7 @@ def load_model(ckpt_path, model_config, device, model_type):
     elif model_type == 'motion_extractor':
         model = MotionExtractor(**model_params).to(device)
     elif model_type == 'motion_generator':
-        model_data = torch.load(ckpt_path, map_location=device)
+        model_data = torch_load_compat(ckpt_path, map_location=device, weights_only=False)
         model_args = NullableArgs(model_data['args'])
         model = DitTalkingHead(motion_feat_dim=model_args.motion_feat_dim, 
                                n_motions=model_args.n_motions, 
@@ -178,7 +202,11 @@ def load_model(ckpt_path, model_config, device, model_type):
     elif model_type == 'stitching_retargeting_module':
         # Special handling for stitching and retargeting module
         config = model_config['model_params']['stitching_retargeting_module_params']
-        checkpoint = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        checkpoint = torch_load_compat(
+            ckpt_path,
+            map_location=lambda storage, loc: storage,
+            weights_only=False
+        )
 
         stitcher = StitchingRetargetingNetwork(**config.get('stitching'))
         stitcher.load_state_dict(remove_ddp_dumplicate_key(checkpoint['retarget_shoulder']))
@@ -203,7 +231,7 @@ def load_model(ckpt_path, model_config, device, model_type):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    model.load_state_dict(torch.load(ckpt_path, map_location=lambda storage, loc: storage))
+    model.load_state_dict(torch_load_compat(ckpt_path, map_location=lambda storage, loc: storage))
     model.eval()
     return model
 

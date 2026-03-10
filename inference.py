@@ -1,20 +1,19 @@
 # coding: utf-8
 import os
 import os.path as osp
+import sys
 import tyro
 import subprocess
 import platform
 from src.config.argument_config import ArgumentConfig
 from src.config.inference_config import InferenceConfig
 from src.config.crop_config import CropConfig
+from src.config.cli_utils import build_config_from_cli
 
 if platform.system() == "Windows":
     import pathlib
     temp = pathlib.PosixPath
     pathlib.PosixPath = pathlib.WindowsPath
-
-def partial_fields(target_class, kwargs):
-    return target_class(**{k: v for k, v in kwargs.items() if hasattr(target_class, k)})
 
 def fast_check_ffmpeg():
     try:
@@ -46,8 +45,8 @@ def main():
     fast_check_args(args)
 
     # specify configs for inference
-    inference_cfg = partial_fields(InferenceConfig, args.__dict__)
-    crop_cfg = partial_fields(CropConfig, args.__dict__)
+    inference_cfg = build_config_from_cli(InferenceConfig, args, sys.argv[1:])
+    crop_cfg = build_config_from_cli(CropConfig, args, sys.argv[1:])
 
     # init pipeline
     if args.animation_mode == "animal":

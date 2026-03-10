@@ -1,4 +1,5 @@
 import os
+import sys
 import tyro
 import subprocess
 import gradio as gr
@@ -9,14 +10,12 @@ from src.gradio_pipeline import GradioPipeline, GradioPipelineAnimal
 from src.config.crop_config import CropConfig
 from src.config.argument_config import ArgumentConfig
 from src.config.inference_config import InferenceConfig
+from src.config.cli_utils import build_config_from_cli
 
 if platform.system() == "Windows":
     import pathlib
     temp = pathlib.PosixPath
     pathlib.PosixPath = pathlib.WindowsPath
-
-def partial_fields(target_class, kwargs):
-    return target_class(**{k: v for k, v in kwargs.items() if hasattr(target_class, k)})
 
 def fast_check_ffmpeg():
     try:
@@ -38,8 +37,8 @@ tyro.extras.set_accent_color("bright_cyan")
 args = tyro.cli(ArgumentConfig)
 
 # specify configs for inference
-inference_cfg = partial_fields(InferenceConfig, args.__dict__)  # use attribute of args to initial InferenceConfig
-crop_cfg = partial_fields(CropConfig, args.__dict__)  # use attribute of args to initial CropConfig
+inference_cfg = build_config_from_cli(InferenceConfig, args, sys.argv[1:])
+crop_cfg = build_config_from_cli(CropConfig, args, sys.argv[1:])
 
 
 ############# Functions #################

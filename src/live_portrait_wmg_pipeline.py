@@ -60,7 +60,7 @@ class LivePortraitPipeline(object):
         I_p_lst = []
         R_d_0, x_d_0_info = None, None
         flag_normalize_lip = inf_cfg.flag_normalize_lip  # not overwrite
-        flag_source_video_eye_retargeting = inf_cfg.flag_source_video_eye_retargeting  # not overwrite
+        flag_source_video_eye_retargeting = inf_cfg.flag_source_video_eye_retargeting  # keep source eye-open ratio stable
         lip_delta_before_animation, eye_delta_before_animation = None, None
 
         ######## process source info ########
@@ -86,6 +86,11 @@ class LivePortraitPipeline(object):
             combined_lip_ratio_tensor_before_animation = self.live_portrait_wrapper.calc_combined_lip_ratio(c_d_lip_before_animation, source_lmk)
             if combined_lip_ratio_tensor_before_animation[0][0] >= inf_cfg.lip_normalize_threshold:
                 lip_delta_before_animation = self.live_portrait_wrapper.retarget_lip(x_s, combined_lip_ratio_tensor_before_animation)
+
+        if flag_source_video_eye_retargeting and inf_cfg.flag_relative_motion and source_lmk is not None:
+            c_s_eyes_lst, _ = self.live_portrait_wrapper.calc_ratio([source_lmk])
+            combined_eye_ratio_tensor_before_animation = self.live_portrait_wrapper.calc_combined_eye_ratio(c_s_eyes_lst[0], source_lmk)
+            eye_delta_before_animation = self.live_portrait_wrapper.retarget_eye(x_s, combined_eye_ratio_tensor_before_animation)
 
         if inf_cfg.flag_pasteback and inf_cfg.flag_do_crop and inf_cfg.flag_stitching:
             mask_ori_float = prepare_paste_back(inf_cfg.mask_crop, crop_info['M_c2o'], dsize=(source_rgb_lst[0].shape[1], source_rgb_lst[0].shape[0]))

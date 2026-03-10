@@ -42,7 +42,7 @@ class InferenceConfig(PrintableConfig):
     flag_crop_driving_video: bool = False
     device_id: int = 0
     flag_normalize_lip: bool = True
-    flag_source_video_eye_retargeting: bool = False
+    flag_source_video_eye_retargeting: bool = True  # keep the eye-open ratio anchored to the source portrait/video
     flag_eye_retargeting: bool = False
     flag_lip_retargeting: bool = False
     flag_stitching: bool = True
