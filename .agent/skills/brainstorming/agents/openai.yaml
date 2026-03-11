@@ -1,0 +1,4 @@
+interface:
+  display_name: "Brainstorming"
+  short_description: "Turn vague ideas into validated designs"
+  default_prompt: "Use $brainstorming to turn this idea into a confirmed design before implementation."

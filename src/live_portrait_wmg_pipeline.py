@@ -64,6 +64,20 @@ class LivePortraitPipeline(object):
         lip_delta_before_animation, eye_delta_before_animation = None, None
         prev_delta_new = None
         lip_idx_lst = [6, 12, 14, 17, 19, 20]
+        # Upper-face channels from the existing hand-tuned expression mapping.
+        eye_idx_lst = [1, 2, 11, 13, 15, 16, 18]
+        eye_component_specs = (
+            (slice(3, 5), 1),
+            (5, 2),
+            (8, 2),
+            (9, slice(1, None)),
+        )
+
+        def preserve_expression_channels(dst: torch.Tensor, src: torch.Tensor, idx_lst, component_specs=()):
+            for idx in idx_lst:
+                dst[:, idx, :] = src[:, idx, :]
+            for exp_idx, comp_idx in component_specs:
+                dst[:, exp_idx, comp_idx] = src[:, exp_idx, comp_idx]
 
         ######## process source info ########
         if inf_cfg.flag_do_crop:
@@ -117,8 +131,8 @@ class LivePortraitPipeline(object):
             if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp":
                 # 相对
                 delta_new = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp']) * inf_cfg.non_lip_expression_multiplier
-                for lip_idx in lip_idx_lst:
-                    delta_new[:, lip_idx, :] = x_d_i_info['exp'][:, lip_idx, :]
+                preserve_expression_channels(delta_new, x_d_i_info['exp'], lip_idx_lst)
+                preserve_expression_channels(delta_new, x_d_i_info['exp'], eye_idx_lst, eye_component_specs)
                 # # 绝对
                 # delta_new = x_s_info['exp'].clone()
                 # for idx in [1,2,6,11,12,13,14,15,16,17,18,19,20]:
@@ -128,8 +142,11 @@ class LivePortraitPipeline(object):
                 # delta_new[:, 8, 2] =  x_d_i_info['exp'][:, 8, 2]
                 # delta_new[:, 9, 1:] = x_d_i_info['exp'][:, 9, 1:]
             elif inf_cfg.animation_region == "lip":
-                for lip_idx in lip_idx_lst:
-                    delta_new[:, lip_idx, :] = (x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp']))[:, lip_idx, :]
+                lip_delta_target = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp'])
+                preserve_expression_channels(delta_new, lip_delta_target, lip_idx_lst)
+            elif inf_cfg.animation_region == "eyes":
+                eye_delta_target = x_s_info['exp'] + (x_d_i_info['exp'] - x_d_0_info['exp'])
+                preserve_expression_channels(delta_new, eye_delta_target, eye_idx_lst, eye_component_specs)
 
             delta_target = delta_new.clone()
 
@@ -148,8 +165,9 @@ class LivePortraitPipeline(object):
                 delta_new = prev_delta_new * (1 - attack_rate) + delta_target * attack_rate
 
             if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp" or inf_cfg.animation_region == "lip":
-                for lip_idx in lip_idx_lst:
-                    delta_new[:, lip_idx, :] = delta_target[:, lip_idx, :]
+                preserve_expression_channels(delta_new, delta_target, lip_idx_lst)
+            if inf_cfg.animation_region == "all" or inf_cfg.animation_region == "exp" or inf_cfg.animation_region == "eyes":
+                preserve_expression_channels(delta_new, delta_target, eye_idx_lst, eye_component_specs)
             prev_delta_new = delta_new.clone()
             # scale
             scale_new = x_s_info['scale'] * (x_d_i_info['scale'] / x_d_0_info['scale'])
