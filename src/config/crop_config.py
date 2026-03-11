@@ -5,6 +5,7 @@ parameters used for crop faces
 """
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .base_config import PrintableConfig, make_abs_path
 
@@ -19,6 +20,11 @@ class CropConfig(PrintableConfig):
     xpose_ckpt_path: str = make_abs_path("../../pretrained_weights/liveportrait_animals/xpose.pth")
     device_id: int = 0  # gpu device id
     flag_force_cpu: bool = False  # force cpu inference, WIP
+    backend: Literal["auto", "tensorrt", "pytorch"] = "auto"
+    trt_engine_root: str = make_abs_path("../../pretrained_weights/trt_engines")
+    trt_precision: Literal["fp16", "fp32"] = "fp16"
+    trt_force_rebuild: bool = False
+    trt_warmup: bool = True
     det_thresh: float = 0.1 # detection threshold
     ########## source image or video cropping option ##########
     dsize: int = 512  # crop size

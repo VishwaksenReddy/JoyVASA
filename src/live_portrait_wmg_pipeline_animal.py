@@ -39,6 +39,7 @@ class LivePortraitPipelineAnimal(object):
     def __init__(self, inference_cfg: InferenceConfig, crop_cfg: CropConfig):
         self.live_portrait_wrapper_animal: LivePortraitWrapperAnimal = LivePortraitWrapperAnimal(inference_cfg=inference_cfg)
         self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
+        log(f"Animal pipeline backends={self.live_portrait_wrapper_animal.active_backends}")
 
     def execute(self, args: ArgumentConfig):
         inf_cfg = self.live_portrait_wrapper_animal.inference_cfg

@@ -33,6 +33,7 @@ class LivePortraitPipeline(object):
     def __init__(self, inference_cfg: InferenceConfig, crop_cfg: CropConfig):
         self.live_portrait_wrapper: LivePortraitWrapper = LivePortraitWrapper(inference_cfg=inference_cfg)
         self.cropper: Cropper = Cropper(crop_cfg=crop_cfg)
+        log(f"Human pipeline backends={self.live_portrait_wrapper.active_backends}")
     
     def execute(self, args: ArgumentConfig, ):
         inf_cfg = self.live_portrait_wrapper.inference_cfg

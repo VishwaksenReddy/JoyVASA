@@ -41,6 +41,11 @@ class InferenceConfig(PrintableConfig):
     flag_use_half_precision: bool = True
     flag_crop_driving_video: bool = False
     device_id: int = 0
+    backend: Literal["auto", "tensorrt", "pytorch"] = "auto"
+    trt_engine_root: str = make_abs_path("../../pretrained_weights/trt_engines")
+    trt_precision: Literal["fp16", "fp32"] = "fp16"
+    trt_force_rebuild: bool = False
+    trt_warmup: bool = True
     flag_normalize_lip: bool = True
     flag_source_video_eye_retargeting: bool = True  # keep the eye-open ratio anchored to the source portrait/video
     flag_eye_retargeting: bool = False

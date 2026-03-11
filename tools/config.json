@@ -1,0 +1,25 @@
+{
+  "directories": {
+    "onnx_root": "../pretrained_weights/trt_artifacts/onnx",
+    "engine_root": "../pretrained_weights/trt_artifacts/engines"
+  },
+  "build": {
+    "force_rebuild": false
+  },
+  "precision": {
+    "fp16": [
+
+    ],
+    "fp32": [
+      "motion_denoiser",
+      "human_appearance_feature_extractor",
+      "human_motion_extractor",
+      "human_warping_module",
+      "human_spade_generator",
+      "human_stitching",
+      "human_lip",
+      "human_eye",
+      "motion_audio_feature"
+    ]
+  }
+}

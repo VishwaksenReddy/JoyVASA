@@ -22,6 +22,11 @@ class ArgumentConfig(PrintableConfig):
     flag_use_half_precision: bool = False  # whether to use half precision (FP16). If black boxes appear, it might be due to GPU incompatibility; set to False.
     device_id: int = 0  # gpu device id
     flag_force_cpu: bool = False  # force cpu inference, WIP!
+    backend: Literal["auto", "tensorrt", "pytorch"] = "auto"
+    trt_engine_root: str = make_abs_path("../../pretrained_weights/trt_engines")
+    trt_precision: Literal["fp16", "fp32"] = "fp16"
+    trt_force_rebuild: bool = False
+    trt_warmup: bool = True
     flag_normalize_lip: bool = False  # False,  whether to let the lip to close state before animation, only take effect when flag_eye_retargeting and flag_lip_retargeting is False
 
     flag_source_video_eye_retargeting: bool = False  # whether to keep the eye-open ratio anchored to the source portrait/video before animation; only takes effect when flag_eye_retargeting and flag_lip_retargeting are False

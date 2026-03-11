@@ -17,6 +17,7 @@ omegaconf==2.3.0
 onnx2torch==1.5.14
 onnx==1.16.1
 onnxruntime-gpu==1.18.0
+tensorrt-cu12==10.15.1.29
 opencv-python==4.10.0.84
 pillow==10.3.0
 pyyaml==6.0.1

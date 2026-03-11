@@ -20,6 +20,7 @@ from .io import contiguous
 from .rprint import rlog as log
 from .face_analysis_diy import FaceAnalysisDIY
 from .human_landmark_runner import LandmarkRunner as HumanLandmark
+from ..runtime import get_ort_provider_bundle
 
 def make_abs_path(fn):
     return osp.join(osp.dirname(osp.realpath(__file__)), fn)
@@ -46,24 +47,29 @@ class Cropper(object):
         flag_force_cpu = kwargs.get("flag_force_cpu", False)
         if flag_force_cpu:
             device = "cpu"
-            face_analysis_wrapper_provider = ["CPUExecutionProvider"]
         else:
             try:
                 if torch.backends.mps.is_available():
                     # Shape inference currently fails with CoreMLExecutionProvider
                     # for the retinaface model
                     device = "mps"
-                    face_analysis_wrapper_provider = ["CPUExecutionProvider"]
                 else:
                     device = "cuda"
-                    face_analysis_wrapper_provider = ["CUDAExecutionProvider"]
             except:
                     device = "cuda"
-                    face_analysis_wrapper_provider = ["CUDAExecutionProvider"]
+        providers, provider_options, session_options = get_ort_provider_bundle(
+            backend=self.crop_cfg.backend,
+            device=device,
+            device_id=device_id,
+            precision=self.crop_cfg.trt_precision,
+            cache_root=osp.join(self.crop_cfg.trt_engine_root, "ort_cache"),
+        )
+        log(f"Cropper backend={self.crop_cfg.backend}, providers={providers}")
         self.face_analysis_wrapper = FaceAnalysisDIY(
                     name="buffalo_l",
                     root=self.crop_cfg.insightface_root,
-                    providers=face_analysis_wrapper_provider,
+                    providers=providers,
+                    provider_options=provider_options,
                 )
         self.face_analysis_wrapper.prepare(ctx_id=device_id, det_size=(512, 512), det_thresh=self.crop_cfg.det_thresh)
         self.face_analysis_wrapper.warmup()
@@ -72,6 +78,9 @@ class Cropper(object):
             ckpt_path=self.crop_cfg.landmark_ckpt_path,
             onnx_provider=device,
             device_id=device_id,
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
         )
         self.human_landmark_runner.warmup()
 

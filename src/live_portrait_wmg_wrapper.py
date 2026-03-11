@@ -24,6 +24,7 @@ from .utils.retargeting_utils import calc_eye_close_ratio, calc_lip_close_ratio
 from .config.inference_config import InferenceConfig
 from .utils.rprint import rlog as log
 from .utils.filter import smooth_
+from .runtime import create_model_runner, create_motion_generator_runner
 
 
 class LivePortraitWrapper(object):
@@ -32,54 +33,86 @@ class LivePortraitWrapper(object):
     """
 
     def __init__(self, inference_cfg: InferenceConfig):
-
         self.inference_cfg = inference_cfg
         self.device_id = inference_cfg.device_id
         self.compile = inference_cfg.flag_do_torch_compile
-        if inference_cfg.flag_force_cpu:
-            self.device = 'cpu'
-        else:
-            try:
-                if torch.backends.mps.is_available():
-                    self.device = 'mps'
-                else:
-                    self.device = 'cuda:' + str(self.device_id)
-            except:
-                self.device = 'cuda:' + str(self.device_id)
-        
-
-
-        model_config = yaml.load(open(inference_cfg.models_config, 'r'), Loader=yaml.SafeLoader)
-        # init F
-        self.appearance_feature_extractor = load_model(inference_cfg.checkpoint_F, model_config, self.device, 'appearance_feature_extractor')
-        log(f'Load appearance_feature_extractor from {osp.realpath(inference_cfg.checkpoint_F)} done.')
-        # init M
-        self.motion_extractor = load_model(inference_cfg.checkpoint_M, model_config, self.device, 'motion_extractor')
-        log(f'Load motion_extractor from {osp.realpath(inference_cfg.checkpoint_M)} done.')
-        # init W
-        self.warping_module = load_model(inference_cfg.checkpoint_W, model_config, self.device, 'warping_module')
-        log(f'Load warping_module from {osp.realpath(inference_cfg.checkpoint_W)} done.')
-        # init G
-        self.spade_generator = load_model(inference_cfg.checkpoint_G, model_config, self.device, 'spade_generator')
-        log(f'Load spade_generator from {osp.realpath(inference_cfg.checkpoint_G)} done.')
-        # init S and R
-        if inference_cfg.checkpoint_S is not None and osp.exists(inference_cfg.checkpoint_S):
-            self.stitching_retargeting_module = load_model(inference_cfg.checkpoint_S, model_config, self.device, 'stitching_retargeting_module')
-            log(f'Load stitching_retargeting_module from {osp.realpath(inference_cfg.checkpoint_S)} done.')
-        else:
-            self.stitching_retargeting_module = None
-        # Optimize for inference
-        if self.compile:
-            torch._dynamo.config.suppress_errors = True  # Suppress errors and fall back to eager execution
-            self.warping_module = torch.compile(self.warping_module, mode='max-autotune')
-            self.spade_generator = torch.compile(self.spade_generator, mode='max-autotune')
-
-        self.model_config = model_config
+        self.device = self._resolve_device()
+        self.model_config = yaml.load(open(inference_cfg.models_config, 'r'), Loader=yaml.SafeLoader)
         self.timer = Timer()
+        self.active_backends = {}
 
-        # Motion Genertor
-        self.motion_generator, self.motion_generator_args = load_model(inference_cfg.checkpoint_MotionGenerator, model_config, self.device, 'motion_generator')
-        log(f'Load motion_generator from {osp.realpath(inference_cfg.checkpoint_MotionGenerator)} done.')
+        prefix = "human"
+        num_kp = self.model_config["model_params"]["motion_extractor_params"]["num_kp"]
+        spade_upscale = self.model_config["model_params"]["spade_generator_params"].get("upscale", 1)
+        spade_output_size = 256 * max(1, spade_upscale)
+
+        self.appearance_feature_extractor = self._create_core_runner(
+            prefix=prefix,
+            model_name="appearance_feature_extractor",
+            checkpoint_path=inference_cfg.checkpoint_F,
+            model_type="appearance_feature_extractor",
+            inputs={"x": [1, 3, 256, 256]},
+            outputs={"feature_3d": [1, 32, 16, 64, 64]},
+        )
+        self.motion_extractor = self._create_core_runner(
+            prefix=prefix,
+            model_name="motion_extractor",
+            checkpoint_path=inference_cfg.checkpoint_M,
+            model_type="motion_extractor",
+            inputs={"x": [1, 3, 256, 256]},
+            outputs={
+                "pitch": [1, 66],
+                "yaw": [1, 66],
+                "roll": [1, 66],
+                "t": [1, 3],
+                "exp": [1, num_kp * 3],
+                "scale": [1, 1],
+                "kp": [1, num_kp * 3],
+            },
+        )
+        self.warping_module = self._create_core_runner(
+            prefix=prefix,
+            model_name="warping_module",
+            checkpoint_path=inference_cfg.checkpoint_W,
+            model_type="warping_module",
+            inputs={
+                "feature_3d": [1, 32, 16, 64, 64],
+                "kp_driving": [1, num_kp, 3],
+                "kp_source": [1, num_kp, 3],
+            },
+            outputs={
+                "occlusion_map": [1, 1, 64, 64],
+                "deformation": [1, 16, 64, 64, 3],
+                "out": [1, 256, 64, 64],
+            },
+        )
+        self.spade_generator = self._create_core_runner(
+            prefix=prefix,
+            model_name="spade_generator",
+            checkpoint_path=inference_cfg.checkpoint_G,
+            model_type="spade_generator",
+            inputs={"feature": [1, 256, 64, 64]},
+            outputs={"image": [1, 3, spade_output_size, spade_output_size]},
+        )
+        self.stitching_retargeting_module = self._create_stitching_runners(prefix=prefix, checkpoint_path=inference_cfg.checkpoint_S)
+
+        motion_model, self.motion_generator_args = load_model(
+            inference_cfg.checkpoint_MotionGenerator,
+            self.model_config,
+            self.device,
+            'motion_generator',
+        )
+        self.motion_generator = create_motion_generator_runner(
+            model=motion_model,
+            device=self.device,
+            backend=self.inference_cfg.backend,
+            precision=self.inference_cfg.trt_precision,
+            engine_root=self.inference_cfg.trt_engine_root,
+            force_rebuild=self.inference_cfg.trt_force_rebuild,
+            source_paths=[inference_cfg.checkpoint_MotionGenerator],
+        )
+        self.active_backends["motion_generator"] = self.motion_generator.backend_label
+        log(f"Motion generator backend={self.motion_generator.backend_label}")
         self.n_motions = self.motion_generator_args.n_motions
         self.n_prev_motions = self.motion_generator_args.n_prev_motions
         self.fps = self.motion_generator_args.fps
@@ -88,6 +121,80 @@ class LivePortraitWrapper(object):
         self.pad_mode = self.motion_generator_args.pad_mode
         self.use_indicator = self.motion_generator_args.use_indicator
         self.templete_dict = pickle.load(open(inference_cfg.motion_template_path, 'rb'))
+
+    def _resolve_device(self):
+        if self.inference_cfg.flag_force_cpu:
+            return 'cpu'
+        try:
+            if torch.backends.mps.is_available():
+                return 'mps'
+        except Exception:
+            pass
+        return 'cuda:' + str(self.device_id)
+
+    def _compile_if_needed(self, model_type, model):
+        if self.compile and model_type in {'warping_module', 'spade_generator'}:
+            torch._dynamo.config.suppress_errors = True
+            return torch.compile(model, mode='max-autotune')
+        return model
+
+    def _create_core_runner(self, prefix, model_name, checkpoint_path, model_type, inputs, outputs):
+        artifact_name = f"{prefix}_{model_name}"
+
+        def loader():
+            model = load_model(checkpoint_path, self.model_config, self.device, model_type)
+            return self._compile_if_needed(model_type, model)
+
+        runner = create_model_runner(
+            name=artifact_name,
+            device=self.device,
+            backend=self.inference_cfg.backend,
+            precision=self.inference_cfg.trt_precision,
+            engine_root=self.inference_cfg.trt_engine_root,
+            force_rebuild=self.inference_cfg.trt_force_rebuild,
+            loader=loader,
+            source_paths=[checkpoint_path, self.inference_cfg.models_config],
+            inputs=inputs,
+            outputs=outputs,
+        )
+        self.active_backends[model_name] = runner.backend_label
+        log(f"Load {model_name} from {osp.realpath(checkpoint_path)} using backend={runner.backend_label}.")
+        return runner
+
+    def _create_stitching_runners(self, prefix, checkpoint_path):
+        if checkpoint_path is None or not osp.exists(checkpoint_path):
+            return None
+
+        modules = load_model(checkpoint_path, self.model_config, self.device, 'stitching_retargeting_module')
+        config = self.model_config['model_params']['stitching_retargeting_module_params']
+        input_sizes = {
+            'stitching': config['stitching']['input_size'],
+            'lip': config['lip']['input_size'],
+            'eye': config['eye']['input_size'],
+        }
+        output_sizes = {
+            'stitching': config['stitching']['output_size'],
+            'lip': config['lip']['output_size'],
+            'eye': config['eye']['output_size'],
+        }
+        runners = {}
+        for head_name, head in modules.items():
+            runner = create_model_runner(
+                name=f"{prefix}_{head_name}",
+                device=self.device,
+                backend=self.inference_cfg.backend,
+                precision=self.inference_cfg.trt_precision,
+                engine_root=self.inference_cfg.trt_engine_root,
+                force_rebuild=self.inference_cfg.trt_force_rebuild,
+                loader=lambda head=head: head,
+                source_paths=[checkpoint_path, self.inference_cfg.models_config],
+                inputs={"feat": [1, input_sizes[head_name]]},
+                outputs={"delta": [1, output_sizes[head_name]]},
+            )
+            runners[head_name] = runner
+            self.active_backends[f"stitching_{head_name}"] = runner.backend_label
+            log(f"Load stitching head {head_name} from {osp.realpath(checkpoint_path)} using backend={runner.backend_label}.")
+        return runners
 
 
     def inference_ctx(self):
@@ -480,48 +587,83 @@ class LivePortraitWrapperAnimal(LivePortraitWrapper):
         self.inference_cfg = inference_cfg
         self.device_id = inference_cfg.device_id
         self.compile = inference_cfg.flag_do_torch_compile
-        if inference_cfg.flag_force_cpu:
-            self.device = 'cpu'
-        else:
-            try: 
-                if torch.backends.mps.is_available():
-                    self.device = 'mps'
-                else:
-                    self.device = 'cuda:' + str(self.device_id)
-            except:
-                    self.device = 'cuda:' + str(self.device_id)
-
-        model_config = yaml.load(open(inference_cfg.models_config, 'r'), Loader=yaml.SafeLoader)
-        # init F
-        self.appearance_feature_extractor = load_model(inference_cfg.checkpoint_F_animal, model_config, self.device, 'appearance_feature_extractor')
-        log(f'Load appearance_feature_extractor from {osp.realpath(inference_cfg.checkpoint_F_animal)} done.')
-        # init M
-        self.motion_extractor = load_model(inference_cfg.checkpoint_M_animal, model_config, self.device, 'motion_extractor')
-        log(f'Load motion_extractor from {osp.realpath(inference_cfg.checkpoint_M_animal)} done.')
-        # init W
-        self.warping_module = load_model(inference_cfg.checkpoint_W_animal, model_config, self.device, 'warping_module')
-        log(f'Load warping_module from {osp.realpath(inference_cfg.checkpoint_W_animal)} done.')
-        # init G
-        self.spade_generator = load_model(inference_cfg.checkpoint_G_animal, model_config, self.device, 'spade_generator')
-        log(f'Load spade_generator from {osp.realpath(inference_cfg.checkpoint_G_animal)} done.')
-        # init S and R
-        if inference_cfg.checkpoint_S_animal is not None and osp.exists(inference_cfg.checkpoint_S_animal):
-            self.stitching_retargeting_module = load_model(inference_cfg.checkpoint_S_animal, model_config, self.device, 'stitching_retargeting_module')
-            log(f'Load stitching_retargeting_module from {osp.realpath(inference_cfg.checkpoint_S_animal)} done.')
-        else:
-            self.stitching_retargeting_module = None
-
-        # Optimize for inference
-        if self.compile:
-            torch._dynamo.config.suppress_errors = True  # Suppress errors and fall back to eager execution
-            self.warping_module = torch.compile(self.warping_module, mode='max-autotune')
-            self.spade_generator = torch.compile(self.spade_generator, mode='max-autotune')
-
+        self.device = self._resolve_device()
+        self.model_config = yaml.load(open(inference_cfg.models_config, 'r'), Loader=yaml.SafeLoader)
         self.timer = Timer()
+        self.active_backends = {}
 
-        # Motion Genertor
-        self.motion_generator, self.motion_generator_args = load_model(inference_cfg.checkpoint_MotionGenerator, model_config, self.device, 'motion_generator')
-        log(f'Load motion_generator from {osp.realpath(inference_cfg.checkpoint_MotionGenerator)} done.')
+        prefix = "animal"
+        num_kp = self.model_config["model_params"]["motion_extractor_params"]["num_kp"]
+        spade_upscale = self.model_config["model_params"]["spade_generator_params"].get("upscale", 1)
+        spade_output_size = 256 * max(1, spade_upscale)
+
+        self.appearance_feature_extractor = self._create_core_runner(
+            prefix=prefix,
+            model_name="appearance_feature_extractor",
+            checkpoint_path=inference_cfg.checkpoint_F_animal,
+            model_type="appearance_feature_extractor",
+            inputs={"x": [1, 3, 256, 256]},
+            outputs={"feature_3d": [1, 32, 16, 64, 64]},
+        )
+        self.motion_extractor = self._create_core_runner(
+            prefix=prefix,
+            model_name="motion_extractor",
+            checkpoint_path=inference_cfg.checkpoint_M_animal,
+            model_type="motion_extractor",
+            inputs={"x": [1, 3, 256, 256]},
+            outputs={
+                "pitch": [1, 66],
+                "yaw": [1, 66],
+                "roll": [1, 66],
+                "t": [1, 3],
+                "exp": [1, num_kp * 3],
+                "scale": [1, 1],
+                "kp": [1, num_kp * 3],
+            },
+        )
+        self.warping_module = self._create_core_runner(
+            prefix=prefix,
+            model_name="warping_module",
+            checkpoint_path=inference_cfg.checkpoint_W_animal,
+            model_type="warping_module",
+            inputs={
+                "feature_3d": [1, 32, 16, 64, 64],
+                "kp_driving": [1, num_kp, 3],
+                "kp_source": [1, num_kp, 3],
+            },
+            outputs={
+                "occlusion_map": [1, 1, 64, 64],
+                "deformation": [1, 16, 64, 64, 3],
+                "out": [1, 256, 64, 64],
+            },
+        )
+        self.spade_generator = self._create_core_runner(
+            prefix=prefix,
+            model_name="spade_generator",
+            checkpoint_path=inference_cfg.checkpoint_G_animal,
+            model_type="spade_generator",
+            inputs={"feature": [1, 256, 64, 64]},
+            outputs={"image": [1, 3, spade_output_size, spade_output_size]},
+        )
+        self.stitching_retargeting_module = self._create_stitching_runners(prefix=prefix, checkpoint_path=inference_cfg.checkpoint_S_animal)
+
+        motion_model, self.motion_generator_args = load_model(
+            inference_cfg.checkpoint_MotionGenerator,
+            self.model_config,
+            self.device,
+            'motion_generator',
+        )
+        self.motion_generator = create_motion_generator_runner(
+            model=motion_model,
+            device=self.device,
+            backend=self.inference_cfg.backend,
+            precision=self.inference_cfg.trt_precision,
+            engine_root=self.inference_cfg.trt_engine_root,
+            force_rebuild=self.inference_cfg.trt_force_rebuild,
+            source_paths=[inference_cfg.checkpoint_MotionGenerator],
+        )
+        self.active_backends["motion_generator"] = self.motion_generator.backend_label
+        log(f"Motion generator backend={self.motion_generator.backend_label}")
         self.n_motions = self.motion_generator_args.n_motions
         self.n_prev_motions = self.motion_generator_args.n_prev_motions
         self.fps = self.motion_generator_args.fps

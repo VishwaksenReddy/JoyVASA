@@ -32,8 +32,25 @@ class LandmarkRunner(object):
         device_id = kwargs.get('device_id', 0)
         self.dsize = kwargs.get('dsize', 224)
         self.timer = Timer()
+        providers = kwargs.get('providers')
+        provider_options = kwargs.get('provider_options')
+        session_options_cfg = kwargs.get('session_options') or {}
 
-        if onnx_provider.lower() == 'cuda':
+        if providers is not None:
+            opts = onnxruntime.SessionOptions()
+            intra_threads = session_options_cfg.get("intra_op_num_threads")
+            if intra_threads is not None:
+                opts.intra_op_num_threads = intra_threads
+            graph_level = session_options_cfg.get("graph_optimization_level")
+            if graph_level is not None:
+                opts.graph_optimization_level = getattr(onnxruntime.GraphOptimizationLevel, graph_level)
+            self.session = onnxruntime.InferenceSession(
+                ckpt_path,
+                providers=providers,
+                provider_options=provider_options,
+                sess_options=opts
+            )
+        elif onnx_provider.lower() == 'cuda':
             self.session = onnxruntime.InferenceSession(
                 ckpt_path, providers=[
                     ('CUDAExecutionProvider', {'device_id': device_id})
