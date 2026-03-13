@@ -15,6 +15,7 @@ except ImportError:  # pragma: no cover - optional dependency
     trt = None
 
 from .engine_utils import get_ort_provider_bundle
+from .trt_plugins import load_plugin_libraries
 
 
 def _torch_dtype_from_trt(dtype) -> torch.dtype:
@@ -64,7 +65,7 @@ class TorchMotionGeneratorRunner:
 class TensorRTRunner:
     backend_label = "tensorrt"
 
-    def __init__(self, engine_path: str, device: str, name: str):
+    def __init__(self, engine_path: str, device: str, name: str, plugin_libraries: list[str] | None = None):
         if trt is None:
             raise RuntimeError("TensorRT Python package is not installed.")
         if not device.startswith("cuda"):
@@ -73,7 +74,10 @@ class TensorRTRunner:
         self.engine_path = engine_path
         self.device = torch.device(device)
         self.name = name
+        self.plugin_libraries = plugin_libraries or []
         self.logger = trt.Logger(trt.Logger.WARNING)
+        if self.plugin_libraries:
+            load_plugin_libraries(self.plugin_libraries, logger=self.logger)
         self.runtime = trt.Runtime(self.logger)
         with open(engine_path, "rb") as handle:
             engine_bytes = handle.read()
@@ -94,13 +98,19 @@ class TensorRTRunner:
             else:
                 self.output_names.append(tensor_name)
 
+    def _collect_inputs(self, *args, **kwargs) -> dict[str, Any]:
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            return dict(args[0])
+
+        if len(args) > len(self.input_names):
+            raise ValueError(f"{self.name} received {len(args)} positional inputs, expected at most {len(self.input_names)}.")
+
+        raw_inputs = dict(zip(self.input_names, args))
+        raw_inputs.update(kwargs)
+        return raw_inputs
+
     def _prepare_inputs(self, *args, **kwargs) -> dict[str, torch.Tensor]:
-        if kwargs:
-            raw_inputs = kwargs
-        elif len(args) == 1 and isinstance(args[0], dict):
-            raw_inputs = args[0]
-        else:
-            raw_inputs = dict(zip(self.input_names, args))
+        raw_inputs = self._collect_inputs(*args, **kwargs)
 
         tensors: dict[str, torch.Tensor] = {}
         for name in self.input_names:
@@ -179,12 +189,13 @@ class OrtTensorRTRunner:
         self.input_names = [item.name for item in self.session.get_inputs()]
 
     def __call__(self, *args, **kwargs):
-        if kwargs:
-            feed_dict = kwargs
-        elif len(args) == 1 and isinstance(args[0], dict):
-            feed_dict = args[0]
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            feed_dict = dict(args[0])
         else:
+            if len(args) > len(self.input_names):
+                raise ValueError(f"{self.name} received {len(args)} positional inputs, expected at most {len(self.input_names)}.")
             feed_dict = dict(zip(self.input_names, args))
+            feed_dict.update(kwargs)
 
         normalized: dict[str, np.ndarray] = {}
         for name in self.input_names:
@@ -220,6 +231,63 @@ class MotionGeneratorTensorRTRunner:
 
     def extract_audio_feature(self, audio):
         return self.audio_feature_runner(audio)
+
+    def _run_denoiser(
+        self,
+        motion_feat,
+        audio_feat,
+        prev_motion_feat,
+        prev_audio_feat,
+        step,
+        indicator,
+    ):
+        feed_dict = {
+            "motion_feat": motion_feat,
+            "audio_feat": audio_feat,
+            "prev_motion_feat": prev_motion_feat,
+            "prev_audio_feat": prev_audio_feat,
+            "step": step,
+        }
+        if "indicator" in self.denoiser_runner.input_names:
+            feed_dict["indicator"] = indicator
+        return self.denoiser_runner(feed_dict)
+
+    def _run_denoiser_entries(
+        self,
+        motion_in,
+        audio_feat_in,
+        prev_motion_feat_in,
+        prev_audio_feat_in,
+        step_in,
+        indicator_tensor,
+        batch_size,
+        n_entries,
+    ):
+        if n_entries == 1:
+            return self._run_denoiser(
+                motion_in,
+                audio_feat_in,
+                prev_motion_feat_in,
+                prev_audio_feat_in,
+                step_in,
+                indicator_tensor,
+            )
+
+        outputs = []
+        for index in range(n_entries):
+            start = index * batch_size
+            end = start + batch_size
+            outputs.append(
+                self._run_denoiser(
+                    motion_in[start:end],
+                    audio_feat_in[start:end],
+                    prev_motion_feat_in[start:end],
+                    prev_audio_feat_in[start:end],
+                    step_in[start:end],
+                    indicator_tensor[start:end],
+                )
+            )
+        return torch.cat(outputs, dim=0)
 
     def sample(
         self,
@@ -298,13 +366,15 @@ class MotionGeneratorTensorRTRunner:
             else:
                 indicator_tensor = indicator_in
 
-            results = self.denoiser_runner(
+            results = self._run_denoiser_entries(
                 motion_in,
                 audio_feat_in,
                 prev_motion_feat_in,
                 prev_audio_feat_in,
                 step_in,
                 indicator_tensor,
+                batch_size=batch_size,
+                n_entries=n_entries,
             )
 
             if dynamic_threshold:

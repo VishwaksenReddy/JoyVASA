@@ -1,4 +1,6 @@
 import argparse
+import contextlib
+import functools
 import sys
 from pathlib import Path
 
@@ -11,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from src.config.inference_config import InferenceConfig
 from src.runtime import DEFAULT_ONNX_OPSET, resolve_engine_artifact
+from src.runtime.onnx_grid_sample3d import joyvasa_grid_sample3d_symbolic
 from src.runtime.export_wrappers import (
     MotionAudioFeatureExportWrapper,
     MotionDenoiserExportWrapper,
@@ -22,19 +25,75 @@ from src.utils.helper import load_model
 from src.utils.rprint import rlog as log
 
 
-def export_module(module, onnx_path: Path, sample_inputs: dict[str, torch.Tensor], output_names: list[str], force: bool = False) -> bool:
+@contextlib.contextmanager
+def onnx_attention_export_compat():
+    multihead_attention = getattr(torch.nn, "MultiheadAttention", None)
+    if multihead_attention is None:
+        yield
+        return
+
+    original_forward = multihead_attention.forward
+
+    @functools.wraps(original_forward)
+    def compatible_forward(
+        self,
+        query,
+        key,
+        value,
+        key_padding_mask=None,
+        need_weights=True,
+        attn_mask=None,
+        average_attn_weights=True,
+        is_causal=False,
+    ):
+        # Force the non-native attention path during ONNX export. PyTorch 2.2 can emit
+        # aten::_native_multi_head_attention for the optimized inference fastpath, which
+        # the opset-17 exporter does not support.
+        if query is key and key is value:
+            query = query.clone()
+        return original_forward(
+            self,
+            query,
+            key,
+            value,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            attn_mask=attn_mask,
+            average_attn_weights=average_attn_weights,
+            is_causal=is_causal,
+        )
+
+    multihead_attention.forward = compatible_forward
+    try:
+        yield
+    finally:
+        multihead_attention.forward = original_forward
+
+
+def export_module(
+    module,
+    onnx_path: Path,
+    sample_inputs: dict[str, torch.Tensor],
+    output_names: list[str],
+    force: bool = False,
+    export_context=None,
+    do_constant_folding: bool = True,
+) -> bool:
     if onnx_path.exists() and not force:
         log(f"Skipping ONNX export because artifact already exists: {onnx_path}")
         return False
     onnx_path.parent.mkdir(parents=True, exist_ok=True)
     module.eval()
-    with torch.no_grad():
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(torch.no_grad())
+        stack.enter_context(onnx_attention_export_compat())
+        stack.enter_context(export_context or contextlib.nullcontext())
         torch.onnx.export(
             module,
             tuple(sample_inputs[name] for name in sample_inputs),
             str(onnx_path),
             opset_version=DEFAULT_ONNX_OPSET,
-            do_constant_folding=True,
+            do_constant_folding=do_constant_folding,
             input_names=list(sample_inputs.keys()),
             output_names=output_names,
         )
@@ -103,6 +162,7 @@ def export_liveportrait_stack(
             },
             warping.output_names,
             force=force,
+            export_context=joyvasa_grid_sample3d_symbolic(DEFAULT_ONNX_OPSET),
         )
 
     spade_name = f"{prefix}_spade_generator"
@@ -181,6 +241,7 @@ def export_motion_stack(
             },
             denoiser_wrapper.output_names,
             force=force,
+            do_constant_folding=False,
         )
 
 

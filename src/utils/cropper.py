@@ -1,5 +1,6 @@
 # coding: utf-8
 
+import os
 import os.path as osp
 import torch
 import numpy as np
@@ -24,6 +25,27 @@ from ..runtime import get_ort_provider_bundle
 
 def make_abs_path(fn):
     return osp.join(osp.dirname(osp.realpath(__file__)), fn)
+
+
+def _preload_ort_gpu_dlls(device: str) -> None:
+    if os.name != "nt" or not device.startswith("cuda"):
+        return
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return
+
+    preload_dlls = getattr(ort, "preload_dlls", None)
+    if preload_dlls is None:
+        return
+
+    try:
+        # On Windows, prefer ORT's NVIDIA site-package runtimes over torch\lib.
+        preload_dlls(cuda=True, cudnn=True, msvc=True, directory="")
+    except TypeError:
+        preload_dlls()
+    except Exception as exc:
+        log(f"ORT CUDA DLL preload failed: {exc}")
 
 
 @dataclass
@@ -63,26 +85,29 @@ class Cropper(object):
             device_id=device_id,
             precision=self.crop_cfg.trt_precision,
             cache_root=osp.join(self.crop_cfg.trt_engine_root, "ort_cache"),
+            include_tensorrt=False,
         )
+        _preload_ort_gpu_dlls(device)
         log(f"Cropper backend={self.crop_cfg.backend}, providers={providers}")
-        self.face_analysis_wrapper = FaceAnalysisDIY(
-                    name="buffalo_l",
-                    root=self.crop_cfg.insightface_root,
-                    providers=providers,
-                    provider_options=provider_options,
-                )
-        self.face_analysis_wrapper.prepare(ctx_id=device_id, det_size=(512, 512), det_thresh=self.crop_cfg.det_thresh)
-        self.face_analysis_wrapper.warmup()
-
-        self.human_landmark_runner = HumanLandmark(
-            ckpt_path=self.crop_cfg.landmark_ckpt_path,
-            onnx_provider=device,
-            device_id=device_id,
-            providers=providers,
-            provider_options=provider_options,
-            session_options=session_options,
-        )
-        self.human_landmark_runner.warmup()
+        try:
+            self.face_analysis_wrapper, self.human_landmark_runner = self._create_ort_helpers(
+                providers=providers,
+                provider_options=provider_options,
+                session_options=session_options,
+                device=device,
+                device_id=device_id,
+                ctx_id=device_id,
+            )
+        except Exception as exc:
+            log(f"Cropper ORT GPU init failed: {exc}. Falling back to CPUExecutionProvider.")
+            self.face_analysis_wrapper, self.human_landmark_runner = self._create_ort_helpers(
+                providers=["CPUExecutionProvider"],
+                provider_options=[{}],
+                session_options={"graph_optimization_level": "ORT_ENABLE_ALL", "intra_op_num_threads": 4},
+                device="cpu",
+                device_id=device_id,
+                ctx_id=-1,
+            )
 
         if self.image_type == "animal_face":
             from .animal_landmark_runner import XPoseRunner as AnimalLandmarkRunner
@@ -93,6 +118,36 @@ class Cropper(object):
                     flag_use_half_precision=kwargs.get("flag_use_half_precision", True),
                 )
             self.animal_landmark_runner.warmup()
+
+    def _create_ort_helpers(
+        self,
+        *,
+        providers,
+        provider_options,
+        session_options,
+        device,
+        device_id,
+        ctx_id,
+    ):
+        face_analysis_wrapper = FaceAnalysisDIY(
+            name="buffalo_l",
+            root=self.crop_cfg.insightface_root,
+            providers=providers,
+            provider_options=provider_options,
+        )
+        face_analysis_wrapper.prepare(ctx_id=ctx_id, det_size=(512, 512), det_thresh=self.crop_cfg.det_thresh)
+        face_analysis_wrapper.warmup()
+
+        human_landmark_runner = HumanLandmark(
+            ckpt_path=self.crop_cfg.landmark_ckpt_path,
+            onnx_provider=device,
+            device_id=device_id,
+            providers=providers,
+            provider_options=provider_options,
+            session_options=session_options,
+        )
+        human_landmark_runner.warmup()
+        return face_analysis_wrapper, human_landmark_runner
 
     def update_config(self, user_args):
         for k, v in user_args.items():
@@ -320,3 +375,4 @@ class Cropper(object):
 
             trajectory.lmk_lst.append(lmk)
         return trajectory.lmk_lst
+

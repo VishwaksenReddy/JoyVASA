@@ -389,7 +389,13 @@ class DenoisingNetwork(nn.Module):
             self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=self.n_layers)
             if self.align_mask_width > 0:
                 motion_len = self.n_prev_motions + self.n_motions
-                alignment_mask = enc_dec_mask(motion_len, motion_len, frame_width=1, expansion=self.align_mask_width - 1)
+                alignment_mask = enc_dec_mask(
+                    motion_len,
+                    motion_len,
+                    frame_width=1,
+                    expansion=self.align_mask_width - 1,
+                    device=device,
+                )
                 # print(f"alignment_mask: ", alignment_mask.shape)
                 # alignment_mask = F.pad(alignment_mask, (0, 0, 1, 0), value=False)
                 self.register_buffer('alignment_mask', alignment_mask)

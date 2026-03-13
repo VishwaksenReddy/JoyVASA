@@ -1,11 +1,14 @@
-import hashlib
 import json
 import os
 import os.path as osp
 import shutil
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
+
+from .trt_plugins import file_sha256 as _file_sha256
+from .trt_plugins import get_plugin_hashes, resolve_plugin_build_id
 
 
 DEFAULT_ONNX_OPSET = 17
@@ -28,6 +31,8 @@ class EngineManifest:
     inputs: dict[str, list[int] | None]
     outputs: dict[str, list[int] | None]
     builder: str
+    plugin_libraries: dict[str, str] = field(default_factory=dict)
+    plugin_build_id: str = ""
 
 
 def backend_prefers_tensorrt(backend: str, device: str) -> bool:
@@ -39,14 +44,7 @@ def _ensure_parent(path: str) -> None:
 
 
 def file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return _file_sha256(path)
 
 
 def resolve_engine_artifact(
@@ -92,18 +90,42 @@ def _source_hashes(source_paths: list[str]) -> dict[str, str]:
     return hashes
 
 
-def _manifest_matches(manifest: EngineManifest | None, precision: str, onnx_path: str, source_paths: list[str]) -> bool:
+def _manifest_matches(
+    manifest: EngineManifest | None,
+    precision: str,
+    onnx_path: str,
+    source_paths: list[str],
+    plugin_libraries: list[str] | None = None,
+    plugin_build_id: str = "",
+) -> bool:
     if manifest is None or manifest.precision != precision:
         return False
     if not osp.exists(onnx_path):
         return False
     if manifest.onnx_sha256 != file_sha256(onnx_path):
         return False
-    return manifest.source_sha256 == _source_hashes(source_paths)
+    if manifest.source_sha256 != _source_hashes(source_paths):
+        return False
+    if manifest.plugin_libraries != get_plugin_hashes(plugin_libraries):
+        return False
+    return manifest.plugin_build_id == (plugin_build_id or resolve_plugin_build_id(plugin_libraries))
 
 
 def _detect_trtexec() -> str | None:
-    return shutil.which("trtexec")
+    discovered = shutil.which("trtexec")
+    if discovered:
+        return discovered
+
+    for root in [
+        os.environ.get("TENSORRT_ROOT"),
+        os.environ.get("TensorRT_ROOT"),
+    ]:
+        if not root:
+            continue
+        candidate = Path(root) / "bin" / ("trtexec.exe" if os.name == "nt" else "trtexec")
+        if candidate.exists():
+            return str(candidate)
+    return None
 
 
 def _builder_label(trtexec_path: str | None) -> str:
@@ -129,15 +151,28 @@ def build_engine_from_onnx(
     inputs: dict[str, list[int] | None] | None = None,
     outputs: dict[str, list[int] | None] | None = None,
     force_rebuild: bool = False,
+    plugin_libraries: list[str] | None = None,
+    plugin_build_id: str = "",
 ) -> str:
     trtexec_path = _detect_trtexec()
     if trtexec_path is None:
         raise FileNotFoundError("TensorRT builder 'trtexec' was not found on PATH.")
     if not osp.exists(artifact.onnx_path):
         raise FileNotFoundError(f"ONNX artifact not found: {artifact.onnx_path}")
+    for plugin_library in plugin_libraries or []:
+        if not osp.exists(plugin_library):
+            raise FileNotFoundError(f"TensorRT plugin library not found: {plugin_library}")
 
     manifest = load_manifest(artifact.manifest_path)
-    if not force_rebuild and osp.exists(artifact.engine_path) and _manifest_matches(manifest, precision, artifact.onnx_path, source_paths):
+    resolved_plugin_build_id = plugin_build_id or resolve_plugin_build_id(plugin_libraries)
+    if not force_rebuild and osp.exists(artifact.engine_path) and _manifest_matches(
+        manifest,
+        precision,
+        artifact.onnx_path,
+        source_paths,
+        plugin_libraries=plugin_libraries,
+        plugin_build_id=resolved_plugin_build_id,
+    ):
         return artifact.engine_path
 
     _ensure_parent(artifact.engine_path)
@@ -150,6 +185,9 @@ def build_engine_from_onnx(
     ]
     if precision == "fp16":
         command.append("--fp16")
+    for plugin_library in plugin_libraries or []:
+        command.append(f"--dynamicPlugins={plugin_library}")
+        command.append(f"--setPluginsToSerialize={plugin_library}")
 
     result = subprocess.run(command, capture_output=True, text=True, check=False)
     if result.returncode != 0:
@@ -165,6 +203,8 @@ def build_engine_from_onnx(
             inputs=inputs or {},
             outputs=outputs or {},
             builder=_builder_label(trtexec_path),
+            plugin_libraries=get_plugin_hashes(plugin_libraries),
+            plugin_build_id=resolved_plugin_build_id,
         ),
     )
     return artifact.engine_path
@@ -180,6 +220,8 @@ def ensure_engine_artifact(
     force_rebuild: bool = False,
     onnx_root: str | None = None,
     engine_root: str | None = None,
+    plugin_libraries: list[str] | None = None,
+    plugin_build_id: str = "",
 ) -> EngineArtifactPaths:
     artifact = resolve_engine_artifact(root, name, precision, onnx_root=onnx_root, engine_root=engine_root)
     if osp.exists(artifact.onnx_path):
@@ -190,6 +232,8 @@ def ensure_engine_artifact(
             inputs=inputs,
             outputs=outputs,
             force_rebuild=force_rebuild,
+            plugin_libraries=plugin_libraries,
+            plugin_build_id=plugin_build_id,
         )
     return artifact
 
@@ -200,12 +244,13 @@ def get_ort_provider_bundle(
     device_id: int,
     precision: str,
     cache_root: str,
+    include_tensorrt: bool = True,
 ) -> tuple[list[str], list[dict[str, Any]], dict[str, Any]]:
     os.makedirs(cache_root, exist_ok=True)
 
     providers: list[str]
     provider_options: list[dict[str, Any]]
-    if backend_prefers_tensorrt(backend, device):
+    if include_tensorrt and backend_prefers_tensorrt(backend, device):
         providers = ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
         provider_options = [
             {

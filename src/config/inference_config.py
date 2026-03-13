@@ -43,6 +43,7 @@ class InferenceConfig(PrintableConfig):
     device_id: int = 0
     backend: Literal["auto", "tensorrt", "pytorch"] = "auto"
     trt_engine_root: str = make_abs_path("../../pretrained_weights/trt_engines")
+    trt_plugin_library: str | None = None
     trt_precision: Literal["fp16", "fp32"] = "fp16"
     trt_force_rebuild: bool = False
     trt_warmup: bool = True
@@ -59,10 +60,10 @@ class InferenceConfig(PrintableConfig):
     flag_do_torch_compile: bool = False
     driving_option: str = "pose-friendly" # "expression-friendly" or "pose-friendly"
     driving_multiplier: float = 1.0
-    non_lip_expression_multiplier: float = 0.75  # damp non-lip expression transfer to reduce exaggerated eye/cheek motion
+    non_lip_expression_multiplier: float = 0.25  # damp non-lip expression transfer to reduce exaggerated eye/cheek motion
     pause_audio_threshold: float = 0.18  # relative audio-energy threshold below which expression decays toward the source baseline
     pause_expression_attack_rate: float = 0.25  # fraction of the target expression offset applied per active frame after a pause
-    pause_expression_decay_rate: float = 0.10  # fraction of the remaining expression offset removed per paused frame
+    pause_expression_decay_rate: float = 0.15  # fraction of the remaining expression offset removed per paused frame
     driving_smooth_observation_variance: float = 3e-7 # smooth strength scalar for the animated video when the input is a source video, the larger the number, the smoother the animated video; too much smoothness would result in loss of motion accuracy
     source_max_dim: int = 1280 # the max dim of height and width of source image or video
     source_division: int = 2 # make sure the height and width of source image or video can be divided by this number

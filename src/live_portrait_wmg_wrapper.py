@@ -156,6 +156,7 @@ class LivePortraitWrapper(object):
             source_paths=[checkpoint_path, self.inference_cfg.models_config],
             inputs=inputs,
             outputs=outputs,
+            plugin_library=self.inference_cfg.trt_plugin_library,
         )
         self.active_backends[model_name] = runner.backend_label
         log(f"Load {model_name} from {osp.realpath(checkpoint_path)} using backend={runner.backend_label}.")
@@ -542,7 +543,7 @@ class LivePortraitWrapper(object):
             audio_energy_lst = [energy / max_audio_energy for energy in audio_energy_lst]
 
         motion_list = []
-        for idx in track(range(motion_coef.shape[0]), description='🚀Generating Motion Sequence...', total=motion_coef.shape[0]):
+        for idx in track(range(motion_coef.shape[0]), description='Generating Motion Sequence...', total=motion_coef.shape[0]):
             exp = motion_coef[idx][:63].cpu() * self.templete_dict["std_exp"] + self.templete_dict["mean_exp"]
             scale = motion_coef[idx][63:64].cpu() * (self.templete_dict["max_scale"] - self.templete_dict["min_scale"]) + self.templete_dict["min_scale"]
             t = motion_coef[idx][64:67].cpu() * (self.templete_dict["max_t"] - self.templete_dict["min_t"]) + self.templete_dict["min_t"]

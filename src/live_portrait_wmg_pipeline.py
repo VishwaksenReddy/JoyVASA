@@ -113,7 +113,7 @@ class LivePortraitPipeline(object):
             mask_ori_float = prepare_paste_back(inf_cfg.mask_crop, crop_info['M_c2o'], dsize=(source_rgb_lst[0].shape[1], source_rgb_lst[0].shape[0]))
 
         ######## animate ########
-        for i in track(range(n_frames), description='🚀Animating Image with Generated Motions...', total=n_frames):
+        for i in track(range(n_frames), description='Animating Image with Generated Motions...', total=n_frames):
             x_d_i_info = driving_template_dct['motion'][i]
             x_d_i_info = dct2device(x_d_i_info, device)
             

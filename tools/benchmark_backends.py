@@ -73,6 +73,7 @@ def benchmark_human(reference: str, audio: str | None, iterations: int, include_
     log(f"feature_3d avg: pytorch={feature_torch_time:.4f}s tensorrt={feature_trt_time:.4f}s drift={tensor_max_abs(feature_torch, feature_trt)}")
     log(f"kp_info avg: pytorch={kp_torch_time:.4f}s tensorrt={kp_trt_time:.4f}s drift={tensor_max_abs(kp_torch, kp_trt)}")
     log(f"warp_decode avg: pytorch={render_torch_time:.4f}s tensorrt={render_trt_time:.4f}s drift={tensor_max_abs(render_torch, render_trt)}")
+    log(f"warping_module backend={trt_wrapper.active_backends.get('warping_module')}")
     log(f"Active backends pytorch={torch_wrapper.active_backends}")
     log(f"Active backends tensorrt={trt_wrapper.active_backends}")
 

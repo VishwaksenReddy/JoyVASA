@@ -24,6 +24,7 @@ class ArgumentConfig(PrintableConfig):
     flag_force_cpu: bool = False  # force cpu inference, WIP!
     backend: Literal["auto", "tensorrt", "pytorch"] = "auto"
     trt_engine_root: str = make_abs_path("../../pretrained_weights/trt_engines")
+    trt_plugin_library: Optional[str] = None
     trt_precision: Literal["fp16", "fp32"] = "fp16"
     trt_force_rebuild: bool = False
     trt_warmup: bool = True

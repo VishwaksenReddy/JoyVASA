@@ -9,7 +9,9 @@ if str(ROOT) not in sys.path:
 
 from src.config.inference_config import InferenceConfig
 from src.runtime import ensure_engine_artifact, resolve_engine_artifact
+from src.runtime.trt_plugins import requires_plugin_library
 from src.utils.rprint import rlog as log
+from build_trt_plugins import PluginBuildResult, build_plugin_library
 
 
 DEFAULT_CONFIG_PATH = ROOT / "tools" / "config.json"
@@ -96,6 +98,10 @@ def load_build_config(config_path: Path, supported_models: set[str]) -> dict:
     return {
         "onnx_root": resolve_output_path(directories["onnx_root"], config_path.parent),
         "engine_root": resolve_output_path(directories["engine_root"], config_path.parent),
+        "plugin_root": resolve_output_path(
+            directories.get("plugin_root", "../pretrained_weights/trt_artifacts/plugins"),
+            config_path.parent,
+        ),
         "fp16_models": fp16_models,
         "fp32_models": fp32_models,
         "force_rebuild": bool(build.get("force_rebuild", False)),
@@ -162,6 +168,11 @@ def main():
         log("No models were selected for building in tools/config.json.")
         return
 
+    plugin_build: PluginBuildResult | None = None
+    if any(requires_plugin_library(name) for name in selected_models):
+        plugin_build = build_plugin_library(build_cfg["plugin_root"], force=force_rebuild)
+        log(f"Ready plugin library: {plugin_build.library_path}")
+
     ensure_internal_onnx(
         cfg=cfg,
         selected_models=selected_models,
@@ -184,6 +195,8 @@ def main():
                     force_rebuild=force_rebuild,
                     onnx_root=build_cfg["onnx_root"],
                     engine_root=build_cfg["engine_root"],
+                    plugin_libraries=[plugin_build.library_path] if requires_plugin_library(name) and plugin_build else None,
+                    plugin_build_id=plugin_build.build_id if requires_plugin_library(name) and plugin_build else "",
                 )
                 if Path(artifact.engine_path).exists():
                     log(f"Ready ({precision}): {artifact.engine_path}")

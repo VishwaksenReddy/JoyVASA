@@ -1,7 +1,8 @@
 {
   "directories": {
     "onnx_root": "../pretrained_weights/trt_artifacts/onnx",
-    "engine_root": "../pretrained_weights/trt_artifacts/engines"
+    "engine_root": "../pretrained_weights/trt_artifacts/engines",
+    "plugin_root": "../pretrained_weights/trt_artifacts/plugins"
   },
   "build": {
     "force_rebuild": false

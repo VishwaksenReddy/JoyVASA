@@ -85,7 +85,7 @@ class LivePortraitPipelineAnimal(object):
 
         ######## animate ########
         I_p_lst = []
-        for i in track(range(n_frames), description='🚀Animating Image with Generated Motions...', total=n_frames):
+        for i in track(range(n_frames), description='Animating Image with Generated Motions...', total=n_frames):
             x_d_i_info = driving_template_dct['motion'][i]
             x_d_i_info = dct2device(x_d_i_info, device)
 

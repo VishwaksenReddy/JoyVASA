@@ -5,6 +5,7 @@ from typing import Any
 from ..utils.rprint import rlog as log
 from .engine_utils import backend_prefers_tensorrt, ensure_engine_artifact
 from .runners import MotionGeneratorTensorRTRunner, TensorRTRunner, TorchMotionGeneratorRunner, TorchRunner
+from .trt_plugins import resolve_model_plugin_libraries, resolve_plugin_build_id
 
 
 def create_model_runner(
@@ -19,8 +20,10 @@ def create_model_runner(
     source_paths: list[str],
     inputs: dict[str, list[int] | None] | None = None,
     outputs: dict[str, list[int] | None] | None = None,
+    plugin_library: str | None = None,
 ):
     if backend_prefers_tensorrt(backend, device):
+        plugin_libraries = resolve_model_plugin_libraries(name, engine_root, plugin_library)
         try:
             artifact = ensure_engine_artifact(
                 root=engine_root,
@@ -30,10 +33,12 @@ def create_model_runner(
                 inputs=inputs,
                 outputs=outputs,
                 force_rebuild=force_rebuild,
+                plugin_libraries=plugin_libraries,
+                plugin_build_id=resolve_plugin_build_id(plugin_libraries),
             )
             if osp.exists(artifact.engine_path):
                 log(f"[TensorRT] Using engine for {name}: {artifact.engine_path}")
-                return TensorRTRunner(artifact.engine_path, device=device, name=name)
+                return TensorRTRunner(artifact.engine_path, device=device, name=name, plugin_libraries=plugin_libraries)
             log(f"[TensorRT] ONNX/engine missing for {name}, falling back to PyTorch.")
         except Exception as exc:  # pragma: no cover - exercised in integration
             log(f"[TensorRT] Failed to initialize {name}: {exc}. Falling back to PyTorch.")
@@ -50,6 +55,7 @@ def create_motion_generator_runner(
     engine_root: str,
     force_rebuild: bool,
     source_paths: list[str],
+    plugin_library: str | None = None,
 ):
     if backend_prefers_tensorrt(backend, device):
         try:
